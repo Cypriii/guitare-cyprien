@@ -1,6 +1,6 @@
 /* Service worker : met l'application en cache pour un fonctionnement hors connexion.
  * Change VERSION à chaque mise à jour des fichiers pour forcer le rafraîchissement. */
-const VERSION = 'guitare-v7';
+const VERSION = 'guitare-v8';
 const FILES = [
   './',
   './index.html',

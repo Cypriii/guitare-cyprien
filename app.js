@@ -210,7 +210,22 @@
       if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; this.ctx = new AC(); }
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
       if (this.ctx.state === 'suspended') this.ctx.resume();
+      clearTimeout(this.relT);
       return this.ctx;
+    },
+    // iOS affiche la page comme « en lecture » (écran verrouillé) tant qu'un contexte audio reste ouvert :
+    // on le ferme dès que plus rien ne joue.
+    busy() { return Metro.running || Guitar.voices.length > 0 || (Timer.running && Timer.target && !Timer.rang); },
+    release() {
+      clearTimeout(this.relT);
+      if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
+      Guitar.voices = [];
+      try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch (e) {}
+      try { if (navigator.mediaSession) { navigator.mediaSession.playbackState = 'none'; navigator.mediaSession.metadata = null; } } catch (e) {}
+    },
+    releaseSoon(ms) {
+      clearTimeout(this.relT);
+      this.relT = setTimeout(() => { if (this.busy()) this.releaseSoon(1500); else this.release(); }, ms || 1500);
     },
     beep(time, freq, dur, vol) {
       const ctx = this.ctx; if (!ctx) return;
@@ -237,7 +252,7 @@
       this.timer = setInterval(() => this.sched(), 25);
       this.sched(); this.ui();
     },
-    stop() { this.running = false; clearInterval(this.timer); this.ui(); $$('.metro .beat').forEach((b) => b.classList.remove('on')); },
+    stop() { this.running = false; clearInterval(this.timer); this.ui(); $$('.metro .beat').forEach((b) => b.classList.remove('on')); Audio.releaseSoon(1000); },
     toggle() { this.running ? this.stop() : this.start(); },
     sched() {
       const ctx = Audio.ctx;
@@ -301,16 +316,21 @@
     start: 0, acc: 0, running: false, target: 0, iv: null, rang: false,
     elapsed() { return this.acc + (this.running ? Date.now() - this.start : 0); },
     toggle() {
-      if (this.running) { this.acc = this.elapsed(); this.running = false; clearInterval(this.iv); }
-      else { Audio.ensure(); this.start = Date.now(); this.running = true; this.iv = setInterval(() => this.tick(), 250); }
+      if (this.running) { this.acc = this.elapsed(); this.running = false; clearInterval(this.iv); Audio.releaseSoon(); }
+      else {
+        // l'audio n'est préparé (pendant le geste) que s'il y a un objectif à sonner
+        if (this.target && !this.rang) Audio.ensure();
+        this.start = Date.now(); this.running = true; this.iv = setInterval(() => this.tick(), 250);
+      }
       this.ui();
     },
-    reset() { this.running = false; clearInterval(this.iv); this.acc = 0; this.rang = false; this.ui(); },
+    reset() { this.running = false; clearInterval(this.iv); this.acc = 0; this.rang = false; this.ui(); Audio.releaseSoon(); },
     tick() {
       if (this.target && !this.rang && this.elapsed() >= this.target * 60000) {
         this.rang = true;
         const ctx = Audio.ensure();
         if (ctx) [0, 0.25, 0.5].forEach((d) => Audio.beep(ctx.currentTime + 0.05 + d, 880, 0.18, 0.9));
+        Audio.releaseSoon(2000);
         toast(`Session de ${this.target} min terminée 🎉`);
         if (navigator.vibrate) navigator.vibrate(300);
       }
@@ -608,6 +628,7 @@
         this.voices.push({ src, gain });
         k++;
       });
+      Audio.releaseSoon(1000); // se refermera après la dernière note (busy() tant que des voix sonnent)
     }
   };
 
@@ -1131,7 +1152,7 @@
     'open-metro'() { openSheet(`<h2>Métronome</h2>${Metro.html()}<div style="height:12px"></div>${Timer.html()}`); },
     'metro-toggle'() { Metro.toggle(); },
     'metro-add'(el) { Metro.bpm = Metro.bpm + +el.dataset.v; },
-    'metro-tap'() { Audio.ensure(); Metro.tap(); },
+    'metro-tap'() { Metro.tap(); },
     'timer-toggle'() { Timer.toggle(); },
     'timer-reset'() { Timer.reset(); },
     'mark-done'(el) {
@@ -1357,8 +1378,15 @@
   })();
 
   // Micro coupé dès que l'app passe en arrière-plan
-  document.addEventListener('visibilitychange', () => { if (document.hidden && (Tuner.running || Tuner.starting)) Tuner.stop(); });
-  window.addEventListener('pagehide', () => Tuner.stop());
+  // et aucun son ne reste « en lecture » sur l'écran verrouillé (sauf si le métronome tourne)
+  const silenceAll = () => {
+    if (Tuner.running || Tuner.starting) Tuner.stop();
+    if (Audio.ctx) Guitar.stop(Audio.ctx);
+    Guitar.voices = [];
+    if (!Metro.running) Audio.release();
+  };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) silenceAll(); });
+  window.addEventListener('pagehide', () => { Metro.stop(); silenceAll(); Audio.release(); });
 
   // Entrée sur le champ de recherche : ferme le clavier
   document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && ev.target.id === 'q') ev.target.blur(); });
@@ -1371,5 +1399,5 @@
   }
 
   // Exposé pour les tests
-  window.__guitare = { parseChord, findChords, allChords, chordNotes, DATA: () => DATA, yin, Tuner, Guitar };
+  window.__guitare = { parseChord, findChords, allChords, chordNotes, DATA: () => DATA, yin, Tuner, Guitar, Audio, Metro };
 })();
